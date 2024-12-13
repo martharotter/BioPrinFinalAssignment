@@ -36,9 +36,10 @@ In this assignment, students analyse a publicly available breast cancer dataset 
 - -[x] **ERBB2_gene_expression_analysis.R
 
  ###### Dependencies
-This implementation requires R 4.4.2 or greater
-BiocManager
-glmnet
+This implementation requires 
+* R 4.4.2 or greater
+* BiocManager
+* glmnet
 
  ###### License
  - MIT
