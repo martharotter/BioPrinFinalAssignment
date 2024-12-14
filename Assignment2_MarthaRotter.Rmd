@@ -1,0 +1,131 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+# 0. Setup and preprocessing
+# Load required libraries
+# Install DESeq2 if not already installed
+if (!requireNamespace("DESeq2", quietly = TRUE)) {
+    install.packages("BiocManager")
+    BiocManager::install("DESeq2")
+}
+
+# Load DESeq2
+library(DESeq2)
+
+# Set paths
+downloads_path  = "/Users/martha/Library/CloudStorage/GoogleDrive-martharotter@gmail.com/My Drive/UCD_Assignments/UCD_AIMedicine/BioPrinciples/Assignment2-FinalProject"
+file_path = paste(downloads_path,"brca_tcga_pan_can_atlas_2018.tar", sep = "/" )
+
+# decompress tar.gz 
+untar(file_path)
+
+# Set working directory 
+folder_path = paste(getwd(),"brca_tcga_pan_can_atlas_2018", sep = "/" )
+setwd(folder_path)
+```
+
+
+```{r}
+# 1. Import data
+# Read the RNA-seq file: data_mrna_seq_v2_rsem.txt
+rna_seq_data = read.delim(paste(folder_path, "data_mrna_seq_v2_rsem.txt", sep = "/"))
+rna_patient_ids = colnames(rna_seq_data)[-c(1:2)]
+assay = as.matrix(rna_seq_data[,-c(1,2)])
+```
+
+```{r}
+# Read the Copy Number Aberrations Data: data_cna.txt
+cna_data = read.delim(paste(folder_path, "data_cna.txt", sep = "/"))
+cna_patient_ids = colnames(cna_data)[-c(1:2)]
+```
+
+```{r}
+# Read the Patient Data file: data_clinical_patient.txt
+patient_data = read.delim(paste(folder_path, "data_clinical_patient.txt", sep="/"), skip=4, header=TRUE)
+clinical_patient_ids <- patient_data$X.Patient.Identifier
+
+# 2. Match patient IDs and remove extra data
+clinical_patient_ids <- gsub("-", ".", clinical_patient_ids) 
+clinical_patient_ids <- paste0(clinical_patient_ids, ".01")
+
+for (i in 3:dim(rna_seq_data)[2]){
+  pat_barcode <- colnames(rna_seq_data)[i] 
+  pat_barcode = substr(pat_barcode, 1, 12)
+  pat_barcode = gsub("\\.", "-",pat_barcode)
+  colnames(rna_seq_data)[i] <- pat_barcode
+}
+
+for (i in 3:dim(cna_data)[2]){
+  pat_barcode <- colnames(cna_data)[i] 
+  pat_barcode <- substr(pat_barcode, 1, 12)
+  pat_barcode <- gsub("\\.", "-",pat_barcode)
+  colnames(cna_data)[i] <- pat_barcode
+}
+
+# Find the column indices that exist in both rna & cna datasets
+rna_cna_col_ids = which(is.element(colnames(rna_seq_data[,-c(1,2)]), colnames(cna_data[,-c(1,2)])))
+
+# Remove any rows that we cannot identify 
+rna_seq_data <- rna_seq_data[!is.na(rna_seq_data$Hugo_Symbol) & rna_seq_data$Hugo_Symbol != "", ]
+
+# Also remove any columns that do not have CNA data
+rna_cna_data_subset = rna_seq_data[,2+rna_cna_col_ids]
+```
+
+```{r}
+# 3. Create metadata using the CNA level of ERBB2+
+erbb2_match = which(cna_data[,1] == 'ERBB2')
+metadata_erbb2 = matrix(0,length(rna_cna_col_ids),1)
+for (i in 1:length(rna_cna_col_ids)){
+  
+  column_i = colnames(rna_cna_data_subset)[i]
+  column_cna = which(colnames(cna_data)==column_i)
+  metadata_erbb2[i,] = 1*(cna_data[erbb2_match,column_cna]>0)
+}
+colnames(metadata_erbb2) = 'ERBB2_Amplification'
+
+# Prepare dataset for differential expression analysis
+dds <- DESeqDataSetFromMatrix(countData = round(rna_cna_data_subset),
+                              colData = metadata_erbb2,
+                              design = ~ ERBB2_Amplification)
+
+```
+
+
+```{r}
+# 4. Normalize data using DESeq2
+dds <- DESeq(dds)
+resultsNames(dds)
+res = results(dds)
+# 5. Obtain differently expressed genes
+res[order(res$padj)[1:10],]
+```
+
+```{r}
+top_ten = res[order(res$padj)[1:10],]
+print(rownames(top_ten)[1])
+print(type(rownames(top_ten)[1]))
+print(rna_seq_data[5678, ])
+# print(rna_seq_data[14279, ])
+# print(rna_seq_data[as.numeric(rownames(top_ten)[1])])
+```
+
+
+```{r}
+# 7. Get the variance stabilised transformed expression values
+vsd = vst(dds)
+par(mfrow = c(1, 2))
+plotPCA(vsd, intgroup=c("ERBB2_Amplification"))
+```
+
+# Perform a Pathway Enrichment Analysis
+
+# With the vst values obtain a PCA plot and a heatmap.
+
+# With the vst values of the DE genes generate an overall survival model using the glmnet package.
+
+
+```
