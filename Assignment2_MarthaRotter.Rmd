@@ -3,17 +3,42 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-```{r}
+```{r setup, include=FALSE, echo=FALSE}
 # 0. Setup and preprocessing
-# Load required libraries
-# Install DESeq2 if not already installed
+
+# Install BiocManager if not already installed
 if (!requireNamespace("DESeq2", quietly = TRUE)) {
     install.packages("BiocManager")
     BiocManager::install("DESeq2")
 }
+if (!requireNamespace("clusterProfiler", quietly = TRUE))
+  BiocManager::install("clusterProfiler")
+if (!requireNamespace("org.Hs.eg.db", quietly = TRUE))
+  BiocManager::install("org.Hs.eg.db")
+if (!requireNamespace("enrichplot", quietly = TRUE))
+  install.packages("enrichplot")
+if (!requireNamespace("pathview", quietly = TRUE))
+  BiocManager::install("pathview")
+#if (!requireNamespace("ReactomePA", quietly = TRUE))
+#  BiocManager::install("ReactomePA")
+if (!requireNamespace("pheatmap", quietly = TRUE))
+  install.packages("pheatmap")
+if (!requireNamespace("glmnet", quietly = TRUE))
+  install.packages("glmnet")
 
-# Load DESeq2
+require("knitr")
+
+# Load required libraries
+library(tidyr)
+library(tibble)
+library(dplyr)
 library(DESeq2)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(pathview)
+library(pheatmap)
+library(survival)
 
 # Set paths
 downloads_path  = "/Users/martha/Library/CloudStorage/GoogleDrive-martharotter@gmail.com/My Drive/UCD_Assignments/UCD_AIMedicine/BioPrinciples/Assignment2-FinalProject"
@@ -25,20 +50,22 @@ untar(file_path)
 # Set working directory 
 folder_path = paste(getwd(),"brca_tcga_pan_can_atlas_2018", sep = "/" )
 setwd(folder_path)
+#opts_knit$set(root.dir = "~/path/to/folder/")
 ```
 
 
 ```{r}
 # 1. Import data
 # Read the RNA-seq file: data_mrna_seq_v2_rsem.txt
-rna_seq_data = read.delim(paste(folder_path, "data_mrna_seq_v2_rsem.txt", sep = "/"))
+rna_seq_data = read.delim(paste(folder_path, "data_mrna_seq_v2_rsem.txt", sep="/"))
 rna_patient_ids = colnames(rna_seq_data)[-c(1:2)]
-assay = as.matrix(rna_seq_data[,-c(1,2)])
+assay <- tibble(rna_seq_data[,-2])
+colnames(assay)[1] <- "GeneName" 
 ```
 
 ```{r}
 # Read the Copy Number Aberrations Data: data_cna.txt
-cna_data = read.delim(paste(folder_path, "data_cna.txt", sep = "/"))
+cna_data = read.delim(paste(folder_path, "data_cna.txt", sep="/"))
 cna_patient_ids = colnames(cna_data)[-c(1:2)]
 ```
 
@@ -47,22 +74,22 @@ cna_patient_ids = colnames(cna_data)[-c(1:2)]
 patient_data = read.delim(paste(folder_path, "data_clinical_patient.txt", sep="/"), skip=4, header=TRUE)
 clinical_patient_ids <- patient_data$X.Patient.Identifier
 
-# 2. Match patient IDs and remove extra data
-clinical_patient_ids <- gsub("-", ".", clinical_patient_ids) 
+# 2. Match the patient IDs of the other files
+clinical_patient_ids <- gsub("-", ".", clinical_patient_ids)
 clinical_patient_ids <- paste0(clinical_patient_ids, ".01")
 
 for (i in 3:dim(rna_seq_data)[2]){
-  pat_barcode <- colnames(rna_seq_data)[i] 
-  pat_barcode = substr(pat_barcode, 1, 12)
-  pat_barcode = gsub("\\.", "-",pat_barcode)
-  colnames(rna_seq_data)[i] <- pat_barcode
+  patient_barcode <- colnames(rna_seq_data)[i] 
+  patient_barcode = substr(patient_barcode, 1, 12)
+  patient_barcode = gsub("\\.", "-",patient_barcode)
+  colnames(rna_seq_data)[i] <- patient_barcode
 }
 
 for (i in 3:dim(cna_data)[2]){
-  pat_barcode <- colnames(cna_data)[i] 
-  pat_barcode <- substr(pat_barcode, 1, 12)
-  pat_barcode <- gsub("\\.", "-",pat_barcode)
-  colnames(cna_data)[i] <- pat_barcode
+  patient_barcode <- colnames(cna_data)[i] 
+  patient_barcode <- substr(patient_barcode, 1, 12)
+  patient_barcode <- gsub("\\.", "-",patient_barcode)
+  colnames(cna_data)[i] <- patient_barcode
 }
 
 # Find the column indices that exist in both rna & cna datasets
@@ -78,54 +105,185 @@ rna_cna_data_subset = rna_seq_data[,2+rna_cna_col_ids]
 ```{r}
 # 3. Create metadata using the CNA level of ERBB2+
 erbb2_match = which(cna_data[,1] == 'ERBB2')
+
+erbb2_cna <- cna_data |>
+  filter(Hugo_Symbol == "ERBB2") |> # extract CNA data of ERBB2
+  pivot_longer(cols = colnames(cna_data)[3]:colnames(cna_data)[dim(cna_data)[2]]
+               , names_to = "PATIENT_ID", values_to = "ERBB2_CNA_LEVEL")
+erbb2_cna$Amplified_Level <- ifelse(erbb2_cna$ERBB2_CNA_LEVEL > 0, "Amplified", "Not Amplified")
+
+assay <- tibble(rna_seq_data[,-2])
+colnames(assay)[1] <- "GeneName" 
+
 metadata_erbb2 = matrix(0,length(rna_cna_col_ids),1)
-for (i in 1:length(rna_cna_col_ids)){
-  
-  column_i = colnames(rna_cna_data_subset)[i]
-  column_cna = which(colnames(cna_data)==column_i)
-  metadata_erbb2[i,] = 1*(cna_data[erbb2_match,column_cna]>0)
+metadata <- matrix(0, dim(assay)[2], 2)
+
+for (i in 1:dim(assay)[2]) {
+  index = which(colnames(assay)[i] == cna_patient_ids)
+  metadata[i,1] = colnames(assay)[i]
+  metadata[i,2] = 1*(as.numeric(erbb2_cna[index,4]) > 0)
 }
+metadata[is.na(metadata)] =0
+colnames(metadata) <- c("PATIENT_ID","Amplified_Level")
+metadata <- metadata |>
+  data.frame() |> 
+  column_to_rownames(var = 'PATIENT_ID')
+all(colnames(rna_seq_data[, -c(1, 2)]) %in% rownames(metadata))
+metadata$Amplified_Level <- as.factor(ifelse(metadata$Amplified_Level > 0, "Amplified", "Not Amplified"))
+table(metadata)
 colnames(metadata_erbb2) = 'ERBB2_Amplification'
 
-# Prepare dataset for differential expression analysis
-dds <- DESeqDataSetFromMatrix(countData = round(rna_cna_data_subset),
-                              colData = metadata_erbb2,
-                              design = ~ ERBB2_Amplification)
+metadata_erbb2_dataframe <- as.data.frame(metadata_erbb2)
+metadata_erbb2_dataframe$ERBB2_Amplification <- factor(metadata_erbb2_dataframe$ERBB2_Amplification)
 
+assay_test <- tibble(rna_seq_data[,-2])
+colnames(assay_test)[1] <- "GeneName" 
+assay3 <- assay_test |>
+  column_to_rownames(var = 'GeneName')       
+
+assay[is.na(assay)]=0
+assay[assay<0]=0 
+print(str(assay))
+print(any(!is.numeric(assay)))
+print(ncol(assay) == nrow(metadata))
+dds <- DESeqDataSetFromMatrix(countData = round(assay3), colData=metadata_erbb2, design = ~ Amplified_Level)
 ```
+
 
 
 ```{r}
 # 4. Normalize data using DESeq2
 dds <- DESeq(dds)
+```
+
+```{r}
 resultsNames(dds)
 res = results(dds)
+summary(res)
+
+# adding back the gene labels now that we are finished with deseq
+res <- as.data.frame(res)
+res$Entrez_Gene_Id <- rna_seq_data$Entrez_Gene_Id
+res$Hugo_Symbol <- rna_seq_data$Hugo_Symbol
+res <- na.omit(res)
+print(head(res))
+
 # 5. Obtain differently expressed genes
-res[order(res$padj)[1:10],]
+top_ten_genes = res[order(res$padj)[1:10],]
+print(top_ten_genes)
 ```
 
 ```{r}
 top_ten = res[order(res$padj)[1:10],]
+print(type(top_ten))
+print(rownames(top_ten))
 print(rownames(top_ten)[1])
 print(type(rownames(top_ten)[1]))
 print(rna_seq_data[5678, ])
 # print(rna_seq_data[14279, ])
+# print(rna_seq_data[17357, ])
+
+# print(rna_seq_data[2008, ])
+# print(rna_seq_data[7416, ])
+#. print(rna_seq_data[13292, ])
+# print(rna_seq_data[12750, ])
+#print(rna_seq_data[10764, ])
+#print(rna_seq_data[11245, ])
+#print(rna_seq_data[6252, ])
+
 # print(rna_seq_data[as.numeric(rownames(top_ten)[1])])
+  
+```
+
+```{r}
+# 6. Perform a pathway enrichment analysis
+
+# get subset of differentially expressed genes.
+res_sig = res[res$padj<0.05,]
+
+# separate into over and under expressed using log2foldchange
+DE_over = rownames(res_sig[res_sig$log2FoldChange>0,])
+DE_under = rownames(res_sig[res_sig$log2FoldChange<0,])
+
+# map into entrez for Keggs
+gene_entrez_over <- bitr(
+  DE_over,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+gene_entrez_under <- bitr(
+  DE_under,
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+
+# run Kegg enrichments
+kegg_results_over =  enrichKEGG(
+  gene          = gene_entrez_over[,2],
+  organism      = "human",   
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+kegg_results_under =  enrichKEGG(
+  gene          = gene_entrez_under[,2],
+  organism      = "human",   
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.05
+)
+
+# validate
+print(head(kegg_results_over))
+print(head(kegg_results_under))
+
+dotplot(kegg_results_over, showCategory=10) + ggtitle("Kegg Pathway Enrichment Over Expressed")
+dotplot(kegg_results_under, showCategory=10) + ggtitle("Kegg Pathway Enrichment Under Expressed")
 ```
 
 
 ```{r}
 # 7. Get the variance stabilised transformed expression values
-vsd = vst(dds)
+vsd = vst(dds, blind=FALSE)
 par(mfrow = c(1, 2))
+
+# 8. With the VST values obtain a PCA plot and a heatmap
 plotPCA(vsd, intgroup=c("ERBB2_Amplification"))
+
+top_DE = order(res$padj)
+vsd_DE = assay(vsd)[top_DE[1:20],]
+annotation_col = data.frame(Early = as.matrix(metadata[,1]))
+rownames(annotation_col) = colnames(vsd)
+
+pheatmap(
+  vsd_DE,
+  cluster_rows = TRUE,      
+  cluster_cols = TRUE,  
+  scale = 'row',
+  show_colnames = FALSE,
+  show_rownames = TRUE,
+  annotation_col = annotation_col)
 ```
 
-# Perform a Pathway Enrichment Analysis
+```{r}
+# 9. With the vst values of the DE genes generate an overall survival model using the glmnet package.
 
-# With the vst values obtain a PCA plot and a heatmap.
+# Extract VST matrix
+vst_matrix <- assay(vsd)
+vst_values <- vst_matrix[, rownames(top_ten)]
 
-# With the vst values of the DE genes generate an overall survival model using the glmnet package.
+rna_seq_metadata = matrix(0, dim(assay)[2],1)
+colnames(patient_data[1])
+pat_ids = patient_data[,1]
 
-
+for (i in 1:dim(assay)[2]){
+  pat_barcode = colnames(assay)[i]
+  pat_barcode = substr(pat_barcode, 1, 12)
+  pat_barcode = gsub("\\.", "-",pat_barcode)
+  idx = which(pat_barcode == pat_ids)
+  metadata[i,1] = 1*(as.numeric(patient_data[idx,col_age])<55)
+}
+metadata[is.na(metadata)] =0
 ```
